@@ -10,10 +10,10 @@ import imaplib
 import email
 
 # ================= কনফিগারেশন =================
-API_TOKEN = 'আপনার_বট_টোকেন_এখানে_দিন'
-ADMIN_ID = 123456789  # আপনার টেলিগ্রাম আইডি
+API_TOKEN = '8789592665:AAFX1Nlx6ArxpR3kgbTNWIerVN9V6GyeCMc'
+ADMIN_ID = 6670461311 # আপনার টেলিগ্রাম আইডি
 
-bot = telebot.Telebot(API_TOKEN)
+bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
 # ================= ফায়ারবেস সেটআপ =================
