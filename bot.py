@@ -662,8 +662,9 @@ def check_inbox(call):
     msg = bot.send_message(user_id, "🚀 ইনবক্স চেক করা হচ্ছে...")
     time.sleep(1.5)
     
-    imap_server = 'imap-mail.outlook.com'
-    pop_server = 'pop-mail.outlook.com'
+    # === আপডেট করা অফিস ৩৬৫ সার্ভার অ্যাড্রেস ===
+    imap_server = 'outlook.office365.com'
+    pop_server = 'outlook.office365.com'
     
     if '@gmail' in email_addr.lower():
         imap_server, pop_server = 'imap.gmail.com', 'pop.gmail.com'
