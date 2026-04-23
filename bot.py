@@ -28,7 +28,6 @@ try:
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     
-    # ডিফল্ট সেটিংস ও প্রাইস তৈরি করা (যদি না থাকে)
     settings_ref = db.collection('settings').document('payment_methods')
     if not settings_ref.get().exists:
         settings_ref.set({'bkash': 'Not Set', 'nagad': 'Not Set', 'binance': 'Not Set'})
@@ -47,7 +46,7 @@ except Exception as e:
 # ================= ২০ মিনিট রিফান্ড চেকার =================
 def refund_checker():
     while True:
-        time.sleep(60) # প্রতি ১ মিনিট পরপর চেক করবে
+        time.sleep(60) 
         try:
             now = time.time()
             sales = db.collection('active_sales').where('msg_received', '==', False).stream()
@@ -55,25 +54,19 @@ def refund_checker():
                 data = sale.to_dict()
                 buy_time = data.get('buy_timestamp', 0)
                 
-                # যদি ২০ মিনিট (১২০০ সেকেন্ড) পার হয়ে যায়
                 if now - buy_time >= 1200:
-                    # ইউজারকে রিফান্ড দেওয়া
                     user_ref = db.collection('users').document(str(data['user_id']))
                     cur_bal = user_ref.get().to_dict().get('balance', 0)
                     user_ref.update({'balance': cur_bal + data['price']})
                     
-                    # মেইল স্টকে ফেরত পাঠানো
                     db.collection('inventory').add({
                         'email': data['email'], 'password': data['password'], 
                         'category': data['category'], 'status': 'fresh'
                     })
                     
-                    # নোটিফিকেশন পাঠানো
                     try:
                         bot.send_message(data['user_id'], f"⚠️ **অটো রিফান্ড!**\n২০ মিনিটে কোনো মেসেজ না আসায় `{data['email']}` বাতিল করা হয়েছে এবং আপনার {data['price']} ৳ রিফান্ড করা হয়েছে।", parse_mode='Markdown')
                     except: pass
-                    
-                    # সেল ডিলিট করা
                     sale.reference.delete()
         except: pass
 
@@ -112,7 +105,6 @@ def cancel_markup():
     markup.add(KeyboardButton("❌ Cancel"))
     return markup
 
-# ================= হেল্পার =================
 def is_banned(user_id):
     try:
         user_doc = db.collection('users').document(str(user_id)).get()
@@ -179,6 +171,7 @@ def process_add_mails(message, category):
             added += 1
     bot.send_message(message.chat.id, f"✅ **{category}**-এ {added} টি মেইল যুক্ত হয়েছে!", reply_markup=admin_menu(), parse_mode='Markdown')
 
+# --- আপডেটেড মেইল লিস্ট এবং TXT এক্সপোর্ট ---
 @bot.callback_query_handler(func=lambda call: call.data == "view_mails")
 def view_mails(call):
     mails = list(db.collection('inventory').limit(10).stream())
@@ -189,11 +182,24 @@ def view_mails(call):
     markup = InlineKeyboardMarkup()
     for m in mails:
         data = m.to_dict()
-        tag = "✅ Fresh" if data['status'] == 'fresh' else "🛒 Sold"
+        tag = "🟢 Fresh" if data['status'] == 'fresh' else "🔴 Sold"
         text += f"📧 `{data['email']}` - {tag}\n"
         markup.add(InlineKeyboardButton(f"🗑 Delete {data['email']}", callback_data=f"delmail_{m.id}"))
-        
+    
+    markup.add(InlineKeyboardButton("📄 Export All to TXT File", callback_data="export_all_mails"))
     bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "export_all_mails")
+def export_all_mails_txt(call):
+    mails = list(db.collection('inventory').stream())
+    text_data = "Email | Password | Category | Status\n" + "-"*50 + "\n"
+    for m in mails:
+        d = m.to_dict()
+        text_data += f"{d.get('email')} | {d.get('password')} | {d.get('category')} | {d.get('status')}\n"
+    
+    file_data = io.BytesIO(text_data.encode('utf-8'))
+    file_data.name = "Mail_Inventory.txt"
+    bot.send_document(call.message.chat.id, file_data, caption="📂 All Mails Exported")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("delmail_"))
 def delete_mail(call):
@@ -595,6 +601,7 @@ def process_purchase(call):
     else:
         bot.answer_callback_query(call.id, "❌ Stock Out!", show_alert=True)
 
+# ===================== ইউজার: MY MAILS & RETURN =====================
 @bot.message_handler(func=lambda message: message.text == "📧 My Mail")
 def my_mails(message):
     user_id = message.chat.id
@@ -606,10 +613,40 @@ def my_mails(message):
             found = True
             data = m.to_dict()
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📩 Check Inbox", callback_data=f"inbox|{data['email']}|{data['password']}"))
+            # এখানে Check Inbox এর সাথে Delete বাটন যুক্ত করা হলো
+            markup.add(
+                InlineKeyboardButton("📩 Check Inbox", callback_data=f"inbox|{data['email']}|{data['password']}"),
+                InlineKeyboardButton("🗑 Delete & Return", callback_data=f"retmail|{data['email']}")
+            )
             bot.send_message(user_id, f"📧 Email: `{data['email']}`", reply_markup=markup, parse_mode='Markdown')
         if not found: bot.send_message(user_id, "আপনার কোনো সক্রিয় মেইল নেই।")
     except: pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("retmail|"))
+def return_user_mail(call):
+    email_addr = call.data.split('|')[1]
+    user_id = call.message.chat.id
+    
+    sales = list(db.collection('active_sales').where('user_id', '==', user_id).where('email', '==', email_addr).stream())
+    if sales:
+        sale_doc = sales[0]
+        data = sale_doc.to_dict()
+        
+        # রিফান্ড করা
+        user_ref = db.collection('users').document(str(user_id))
+        cur_bal = user_ref.get().to_dict().get('balance', 0)
+        user_ref.update({'balance': cur_bal + data.get('price', 0)})
+        
+        # পুনরায় স্টকে পাঠানো
+        db.collection('inventory').add({
+            'email': data['email'], 'password': data['password'], 
+            'category': data.get('category', 'Unknown'), 'status': 'fresh'
+        })
+        
+        sale_doc.reference.delete()
+        bot.edit_message_text(f"✅ মেইলটি ডিলিট করে স্টকে ফেরত দেওয়া হয়েছে এবং আপনার ব্যালেন্সে {data.get('price', 0)} ৳ রিফান্ড করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+    else:
+        bot.answer_callback_query(call.id, "মেইলটি পাওয়া যায়নি।", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("inbox|"))
 def check_inbox(call):
@@ -619,8 +656,15 @@ def check_inbox(call):
     msg = bot.send_message(user_id, "🚀 ইনবক্স চেক করা হচ্ছে...")
     time.sleep(1.5)
     
+    # ডাইনামিক IMAP হোস্ট সিলেকশন (যাতে Hotmail এবং Gmail দুটোই কাজ করে)
+    imap_server = 'imap-mail.outlook.com'
+    if '@gmail' in email_addr.lower():
+        imap_server = 'imap.gmail.com'
+    elif '@yahoo' in email_addr.lower():
+        imap_server = 'imap.mail.yahoo.com'
+        
     try:
-        mail = imaplib.IMAP4_SSL('imap-mail.outlook.com')
+        mail = imaplib.IMAP4_SSL(imap_server)
         mail.login(email_addr, password)
         mail.select('inbox')
         status, data = mail.search(None, 'ALL')
@@ -629,7 +673,6 @@ def check_inbox(call):
         if not mail_ids:
             bot.edit_message_text(f"❌ `{email_addr}`\nনতুন কোনো মেসেজ আসেনি।", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
         else:
-            # মেসেজ পাওয়া গেলে রিফান্ড ট্র্যাকার আপডেট করা
             docs = db.collection('active_sales').where('email', '==', email_addr).stream()
             for doc in docs: doc.reference.update({'msg_received': True})
             
@@ -653,19 +696,17 @@ def check_inbox(call):
                         body = msg_obj.get_payload(decode=True).decode(errors='ignore')
                     
                     bot.edit_message_text(f"✅ **New Message!**\n━━━━━━━━━━━━\n👤 From: `{sender}`\n📌 Sub: `{subject}`\n\n💬 `{body[:150]}`", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
-    except:
-        bot.edit_message_text("❌ লগিন এরর।", chat_id=user_id, message_id=msg.message_id)
+    except Exception as e:
+        # এরর হলে বিস্তারিত দেখাবে যাতে কারণ বোঝা যায়
+        bot.edit_message_text(f"❌ **লগিন এরর!**\nমেইলটিতে লগিন করা সম্ভব হয়নি।\n\n⚠️ **সম্ভাব্য কারণ:**\n- মেইলে IMAP Access অফ আছে।\n- Microsoft/Google সিকিউরিটি ব্লক করেছে।\n- পাসওয়ার্ড ভুল।\n\n_Server Error: {str(e)[:100]}_", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+
 
 # ================= রান স্ক্রিপ্ট (Conflict Fix) =================
 if __name__ == "__main__":
-    # ১. ফ্লাস্ক সার্ভার চালু করা (যাতে Render সার্ভারকে লাইভ পায়)
     threading.Thread(target=run_server, daemon=True).start()
-    
-    # ২. পুরনো ইনস্ট্যান্সটি বন্ধ হওয়ার জন্য ১৫ সেকেন্ড অপেক্ষা করা
     print("Waiting 15 seconds to kill the old instance...")
     time.sleep(15) 
     
-    # ৩. ওয়েবহুক ক্লিয়ার করে বট চালু করা
     try:
         bot.remove_webhook()
         time.sleep(2)
