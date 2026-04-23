@@ -8,6 +8,7 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
 import imaplib
+import poplib
 import email
 from email.header import decode_header
 import io
@@ -633,7 +634,6 @@ def return_user_mail(call):
         price = data.get('price', 0)
         msg_received = data.get('msg_received', False)
         
-        # মেইলটিকে পুনরায় স্টকে পাঠানো হলো
         db.collection('inventory').add({
             'email': data['email'], 'password': data['password'], 
             'category': data.get('category', 'Unknown'), 'status': 'fresh'
@@ -643,10 +643,8 @@ def return_user_mail(call):
         cur_bal = user_ref.get().to_dict().get('balance', 0)
         
         if msg_received:
-            # যদি ইউজার কোনো মেসেজ পেয়ে থাকে, তাহলে কোনো রিফান্ড হবে না
             msg_text = f"✅ মেইলটি আপনার লিস্ট থেকে ডিলিট করে স্টকে পাঠানো হয়েছে।\n⚠️ **(আপনি মেইলটিতে মেসেজ রিসিভ করেছিলেন, তাই কোনো টাকা রিফান্ড করা হয়নি)।**"
         else:
-            # যদি কোনো মেসেজ না পায়, তবে ফুল রিফান্ড পাবে
             user_ref.update({'balance': cur_bal + price})
             msg_text = f"✅ মেইলটি ডিলিট করে স্টকে পাঠানো হয়েছে।\n💰 **(কোনো মেসেজ না পাওয়ায় আপনার ব্যালেন্সে {price} ৳ রিফান্ড করা হয়েছে)।**"
             
@@ -655,6 +653,7 @@ def return_user_mail(call):
     else:
         bot.answer_callback_query(call.id, "মেইলটি পাওয়া যায়নি।", show_alert=True)
 
+# ===================== ইনবক্স চেকিং (IMAP + POP3 FALLBACK) =====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("inbox|"))
 def check_inbox(call):
     user_id = call.message.chat.id
@@ -664,12 +663,15 @@ def check_inbox(call):
     time.sleep(1.5)
     
     imap_server = 'imap-mail.outlook.com'
+    pop_server = 'pop-mail.outlook.com'
+    
     if '@gmail' in email_addr.lower():
-        imap_server = 'imap.gmail.com'
+        imap_server, pop_server = 'imap.gmail.com', 'pop.gmail.com'
     elif '@yahoo' in email_addr.lower():
-        imap_server = 'imap.mail.yahoo.com'
+        imap_server, pop_server = 'imap.mail.yahoo.com', 'pop.mail.yahoo.com'
         
     try:
+        # চেষ্টা ১: IMAP দিয়ে লগিন
         mail = imaplib.IMAP4_SSL(imap_server)
         mail.login(email_addr, password)
         mail.select('inbox')
@@ -678,33 +680,58 @@ def check_inbox(call):
 
         if not mail_ids:
             bot.edit_message_text(f"❌ `{email_addr}`\nনতুন কোনো মেসেজ আসেনি।", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
-        else:
-            docs = db.collection('active_sales').where('email', '==', email_addr).stream()
-            for doc in docs: doc.reference.update({'msg_received': True})
-            
-            status, msg_data = mail.fetch(mail_ids[-1], '(RFC822)')
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg_obj = email.message_from_bytes(response_part[1])
-                    subject = decode_header(msg_obj["Subject"])[0][0]
-                    if isinstance(subject, bytes): subject = subject.decode(errors='ignore')
-                    
-                    sender = decode_header(msg_obj.get("From"))[0][0]
-                    if isinstance(sender, bytes): sender = sender.decode(errors='ignore')
+            return
 
-                    body = ""
-                    if msg_obj.is_multipart():
-                        for part in msg_obj.walk():
-                            if part.get_content_type() == "text/plain":
-                                body = part.get_payload(decode=True).decode(errors='ignore')
-                                break
-                    else:
-                        body = msg_obj.get_payload(decode=True).decode(errors='ignore')
-                    
-                    bot.edit_message_text(f"✅ **New Message!**\n━━━━━━━━━━━━\n👤 From: `{sender}`\n📌 Sub: `{subject}`\n\n💬 `{body[:150]}`", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+        status, msg_data = mail.fetch(mail_ids[-1], '(RFC822)')
+        raw_email = msg_data[0][1]
+
     except Exception as e:
-        bot.edit_message_text(f"❌ **লগিন এরর!**\nমেইলটিতে লগিন করা সম্ভব হয়নি।\n\n⚠️ **সম্ভাব্য কারণ:**\n- মেইলে IMAP Access অফ আছে।\n- Microsoft/Google সিকিউরিটি ব্লক করেছে।\n- পাসওয়ার্ড ভুল।\n\n_Server Error: {str(e)[:100]}_", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+        # চেষ্টা ২: IMAP ব্লক হলে POP3 দিয়ে লগিন (Fallback)
+        try:
+            bot.edit_message_text("🔄 সার্ভার ব্লক করেছে, বিকল্প রাস্তায় (POP3) চেষ্টা করা হচ্ছে...", chat_id=user_id, message_id=msg.message_id)
+            
+            pop_conn = poplib.POP3_SSL(pop_server)
+            pop_conn.user(email_addr)
+            pop_conn.pass_(password)
+            
+            numMessages = len(pop_conn.list()[1])
+            if numMessages == 0:
+                bot.edit_message_text(f"❌ `{email_addr}`\nনতুন কোনো মেসেজ আসেনি।", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+                pop_conn.quit()
+                return
+                
+            response, lines, octets = pop_conn.retr(numMessages)
+            raw_email = b'\r\n'.join(lines)
+            pop_conn.quit()
+            
+        except Exception as pop_e:
+            bot.edit_message_text(f"❌ **লগিন পুরোপুরি ব্লক!**\nমাইক্রোসফট এই মেইলে বেসিক লগিন বন্ধ করে দিয়েছে।\n\n⚠️ **সমাধান:** আপনাকে মেইলে Two-Step চালু করে 'App Password' বের করে বটের ডাটাবেসে দিতে হবে।\n\n_Error: {str(pop_e)[:80]}_", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+            return
 
+    # মেসেজ ডিকোড এবং প্রিন্ট করা (যেখান থেকেই আসুক)
+    try:
+        docs = db.collection('active_sales').where('email', '==', email_addr).stream()
+        for doc in docs: doc.reference.update({'msg_received': True})
+        
+        msg_obj = email.message_from_bytes(raw_email)
+        subject = decode_header(msg_obj["Subject"])[0][0]
+        if isinstance(subject, bytes): subject = subject.decode(errors='ignore')
+        
+        sender = decode_header(msg_obj.get("From"))[0][0]
+        if isinstance(sender, bytes): sender = sender.decode(errors='ignore')
+
+        body = ""
+        if msg_obj.is_multipart():
+            for part in msg_obj.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True).decode(errors='ignore')
+                    break
+        else:
+            body = msg_obj.get_payload(decode=True).decode(errors='ignore')
+        
+        bot.edit_message_text(f"✅ **New Message!**\n━━━━━━━━━━━━\n👤 From: `{sender}`\n📌 Sub: `{subject}`\n\n💬 `{body[:150]}`", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
+    except Exception as parse_e:
+        bot.edit_message_text("❌ মেসেজ পড়তে সমস্যা হয়েছে।", chat_id=user_id, message_id=msg.message_id)
 
 # ================= রান স্ক্রিপ্ট (Conflict Fix) =================
 if __name__ == "__main__":
