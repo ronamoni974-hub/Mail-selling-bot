@@ -61,7 +61,7 @@ def refund_checker():
                     
                     db.collection('inventory').add({
                         'email': data['email'], 'password': data['password'], 
-                        'category': data['category'], 'status': 'fresh'
+                        'category': data.get('category', 'Unknown'), 'status': 'fresh'
                     })
                     
                     try:
@@ -171,7 +171,6 @@ def process_add_mails(message, category):
             added += 1
     bot.send_message(message.chat.id, f"✅ **{category}**-এ {added} টি মেইল যুক্ত হয়েছে!", reply_markup=admin_menu(), parse_mode='Markdown')
 
-# --- আপডেটেড মেইল লিস্ট এবং TXT এক্সপোর্ট ---
 @bot.callback_query_handler(func=lambda call: call.data == "view_mails")
 def view_mails(call):
     mails = list(db.collection('inventory').limit(10).stream())
@@ -613,7 +612,6 @@ def my_mails(message):
             found = True
             data = m.to_dict()
             markup = InlineKeyboardMarkup()
-            # এখানে Check Inbox এর সাথে Delete বাটন যুক্ত করা হলো
             markup.add(
                 InlineKeyboardButton("📩 Check Inbox", callback_data=f"inbox|{data['email']}|{data['password']}"),
                 InlineKeyboardButton("🗑 Delete & Return", callback_data=f"retmail|{data['email']}")
@@ -632,19 +630,28 @@ def return_user_mail(call):
         sale_doc = sales[0]
         data = sale_doc.to_dict()
         
-        # রিফান্ড করা
-        user_ref = db.collection('users').document(str(user_id))
-        cur_bal = user_ref.get().to_dict().get('balance', 0)
-        user_ref.update({'balance': cur_bal + data.get('price', 0)})
+        price = data.get('price', 0)
+        msg_received = data.get('msg_received', False)
         
-        # পুনরায় স্টকে পাঠানো
+        # মেইলটিকে পুনরায় স্টকে পাঠানো হলো
         db.collection('inventory').add({
             'email': data['email'], 'password': data['password'], 
             'category': data.get('category', 'Unknown'), 'status': 'fresh'
         })
         
+        user_ref = db.collection('users').document(str(user_id))
+        cur_bal = user_ref.get().to_dict().get('balance', 0)
+        
+        if msg_received:
+            # যদি ইউজার কোনো মেসেজ পেয়ে থাকে, তাহলে কোনো রিফান্ড হবে না
+            msg_text = f"✅ মেইলটি আপনার লিস্ট থেকে ডিলিট করে স্টকে পাঠানো হয়েছে।\n⚠️ **(আপনি মেইলটিতে মেসেজ রিসিভ করেছিলেন, তাই কোনো টাকা রিফান্ড করা হয়নি)।**"
+        else:
+            # যদি কোনো মেসেজ না পায়, তবে ফুল রিফান্ড পাবে
+            user_ref.update({'balance': cur_bal + price})
+            msg_text = f"✅ মেইলটি ডিলিট করে স্টকে পাঠানো হয়েছে।\n💰 **(কোনো মেসেজ না পাওয়ায় আপনার ব্যালেন্সে {price} ৳ রিফান্ড করা হয়েছে)।**"
+            
         sale_doc.reference.delete()
-        bot.edit_message_text(f"✅ মেইলটি ডিলিট করে স্টকে ফেরত দেওয়া হয়েছে এবং আপনার ব্যালেন্সে {data.get('price', 0)} ৳ রিফান্ড করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+        bot.edit_message_text(msg_text, chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown')
     else:
         bot.answer_callback_query(call.id, "মেইলটি পাওয়া যায়নি।", show_alert=True)
 
@@ -656,7 +663,6 @@ def check_inbox(call):
     msg = bot.send_message(user_id, "🚀 ইনবক্স চেক করা হচ্ছে...")
     time.sleep(1.5)
     
-    # ডাইনামিক IMAP হোস্ট সিলেকশন (যাতে Hotmail এবং Gmail দুটোই কাজ করে)
     imap_server = 'imap-mail.outlook.com'
     if '@gmail' in email_addr.lower():
         imap_server = 'imap.gmail.com'
@@ -697,7 +703,6 @@ def check_inbox(call):
                     
                     bot.edit_message_text(f"✅ **New Message!**\n━━━━━━━━━━━━\n👤 From: `{sender}`\n📌 Sub: `{subject}`\n\n💬 `{body[:150]}`", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
     except Exception as e:
-        # এরর হলে বিস্তারিত দেখাবে যাতে কারণ বোঝা যায়
         bot.edit_message_text(f"❌ **লগিন এরর!**\nমেইলটিতে লগিন করা সম্ভব হয়নি।\n\n⚠️ **সম্ভাব্য কারণ:**\n- মেইলে IMAP Access অফ আছে।\n- Microsoft/Google সিকিউরিটি ব্লক করেছে।\n- পাসওয়ার্ড ভুল।\n\n_Server Error: {str(e)[:100]}_", chat_id=user_id, message_id=msg.message_id, parse_mode='Markdown')
 
 
