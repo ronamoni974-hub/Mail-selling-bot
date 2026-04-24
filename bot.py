@@ -80,7 +80,7 @@ threading.Thread(target=refund_checker, daemon=True).start()
 # ================= সার্ভার =================
 @app.route('/')
 def home():
-    return "Waleya Premium Mail Bot is Running with Forwarding System!"
+    return "Waleya Premium Mail Bot is Running!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -105,9 +105,9 @@ def admin_menu():
     )
     return markup
 
-def cancel_markup():
+def back_markup():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("❌ Cancel"))
+    markup.add(KeyboardButton("🔙 Back"))
     return markup
 
 def is_banned(user_id):
@@ -116,6 +116,11 @@ def is_banned(user_id):
         if user_doc.exists and user_doc.to_dict().get('status') == 'banned': return True
     except: pass
     return False
+
+def go_back(message):
+    bot.clear_step_handler_by_chat_id(message.chat.id)
+    menu = admin_menu() if message.chat.id == ADMIN_ID else user_menu()
+    bot.send_message(message.chat.id, "🔙 মেইন মেনুতে ফিরে এসেছেন।", reply_markup=menu)
 
 # ================= স্টার্ট কমান্ড =================
 @bot.message_handler(commands=['start'])
@@ -134,11 +139,9 @@ def welcome(message):
     else:
         bot.send_message(user_id, f"আমাদের শপে স্বাগতম, {name}!", reply_markup=user_menu())
 
-@bot.message_handler(func=lambda message: message.text == "❌ Cancel")
-def cancel_action(message):
-    bot.clear_step_handler_by_chat_id(message.chat.id)
-    menu = admin_menu() if message.chat.id == ADMIN_ID else user_menu()
-    bot.send_message(message.chat.id, "❌ একশন বাতিল করা হয়েছে।", reply_markup=menu)
+@bot.message_handler(func=lambda message: message.text == "🔙 Back")
+def handle_back_button(message):
+    go_back(message)
 
 # ===================== অ্যাডমিন: FORWARDING SETUP =====================
 @bot.callback_query_handler(func=lambda call: call.data == "setup_forwarding")
@@ -152,17 +155,17 @@ def forwarding_setup_menu(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "add_fwd_gmail")
 def ask_fwd_gmail(call):
-    msg = bot.send_message(call.message.chat.id, "সেন্ট্রাল জিমেইল এবং App Password দিন।\nফরম্যাট: `email|app_password`", parse_mode='Markdown', reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, "সেন্ট্রাল জিমেইল এবং App Password দিন।\nফরম্যাট: `email|app_password`", parse_mode='Markdown', reply_markup=back_markup())
     bot.register_next_step_handler(msg, save_fwd_gmail)
 
 def save_fwd_gmail(message):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     try:
         email_addr, app_pw = message.text.split('|')
         db.collection('forwarding_gmails').add({'email': email_addr.strip(), 'password': app_pw.strip()})
         bot.send_message(message.chat.id, "✅ ফরওয়ার্ডিং জিমেইল সফলভাবে যুক্ত হয়েছে!", reply_markup=admin_menu())
     except:
-        bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল। আবার চেষ্টা করুন।", reply_markup=admin_menu())
+        bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল।", reply_markup=admin_menu())
 
 @bot.callback_query_handler(func=lambda call: call.data == "view_fwd_gmails")
 def view_fwd_gmails(call):
@@ -181,8 +184,7 @@ def view_fwd_gmails(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("delfwd_"))
 def delete_fwd_gmail(call):
-    doc_id = call.data.split('_')[1]
-    db.collection('forwarding_gmails').document(doc_id).delete()
+    db.collection('forwarding_gmails').document(call.data.split('_')[1]).delete()
     bot.answer_callback_query(call.id, "ডিলিট করা হয়েছে।")
     view_fwd_gmails(call)
 
@@ -196,7 +198,7 @@ def manage_mails(message):
     )
     markup.add(
         InlineKeyboardButton("🔍 Search Mail", callback_data="search_mail"),
-        InlineKeyboardButton("📄 Export All to TXT File", callback_data="export_all_mails")
+        InlineKeyboardButton("📄 Export All to TXT", callback_data="export_all_mails")
     )
     bot.send_message(message.chat.id, "মেইল ম্যানেজমেন্ট মেনু:", reply_markup=markup)
 
@@ -212,16 +214,11 @@ def ask_link_gmail(call):
     category = call.data.split('_')[1]
     gmails = list(db.collection('forwarding_gmails').stream())
     
-    if not gmails and category != 'Gmail':
-        return bot.send_message(call.message.chat.id, "⚠️ আগে একটি ফরওয়ার্ডিং জিমেইল সেটআপ করুন (Settings > Forwarding Setup)।")
-        
     markup = InlineKeyboardMarkup(row_width=1)
-    if category == 'Gmail':
-        markup.add(InlineKeyboardButton("No Linking (Direct Login)", callback_data=f"linknone_{category}"))
-    else:
-        for g in gmails:
-            d = g.to_dict()
-            markup.add(InlineKeyboardButton(f"Link with {d['email']}", callback_data=f"link_{g.id}_{category}"))
+    markup.add(InlineKeyboardButton("No Linking (Direct Login)", callback_data=f"linknone_{category}"))
+    for g in gmails:
+        d = g.to_dict()
+        markup.add(InlineKeyboardButton(f"Link with {d['email']}", callback_data=f"link_{g.id}_{category}"))
             
     bot.edit_message_text(f"**{category}** এর জন্য ফরওয়ার্ডিং জিমেইল সিলেক্ট করুন:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode='Markdown')
 
@@ -234,30 +231,24 @@ def enter_mails_to_add(call):
     else:
         _, g_id, category = call.data.split('_')
         gmail_info = db.collection('forwarding_gmails').document(g_id).get().to_dict()
-        instruction = f"**{category}** এর মেইলগুলো নিচে দিন। (যেহেতু ফরোয়ার্ডিং সিলেক্ট করেছেন, পাসওয়ার্ড দেওয়ার দরকার নেই!)\nফরম্যাট: `email` (যেমন: abc@outlook.com)\n\nযদি পাসওয়ার্ড সহ দিতে চান: `email|password`"
+        instruction = f"**{category}** এর মেইলগুলো নিচে দিন।\nযেহেতু ফরোয়ার্ডিং সিলেক্ট করেছেন, শুধু মেইল দিলেই হবে!\nফরম্যাট: `email` (যেমন: abc@outlook.com)"
         
-    msg = bot.send_message(call.message.chat.id, instruction, parse_mode='Markdown', reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, instruction, parse_mode='Markdown', reply_markup=back_markup())
     bot.register_next_step_handler(msg, process_add_mails, category, gmail_info)
 
 def process_add_mails(message, category, gmail_info):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     lines = message.text.split('\n')
     added = 0
     for line in lines:
         if line.strip() == "": continue
-        
         if '|' in line:
             email_addr, password = line.split('|', 1)
         else:
             email_addr = line.strip()
             password = "AutoForwarded" 
             
-        data = {
-            'email': email_addr.strip(), 
-            'password': password.strip(), 
-            'category': category, 
-            'status': 'fresh'
-        }
+        data = {'email': email_addr.strip(), 'password': password.strip(), 'category': category, 'status': 'fresh'}
         if gmail_info:
             data['linked_gmail'] = gmail_info['email']
             data['linked_gmail_pw'] = gmail_info['password']
@@ -297,20 +288,20 @@ def delete_mail(call):
     
 @bot.callback_query_handler(func=lambda call: call.data == "search_mail")
 def ask_search_mail(call):
-    msg = bot.send_message(call.message.chat.id, "🔎 যে মেইলটি খুঁজতে চান সেটি লিখে পাঠান:", reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, "🔎 যে মেইলটি খুঁজতে চান সেটি লিখে পাঠান:", reply_markup=back_markup())
     bot.register_next_step_handler(msg, process_search_mail)
 
 def process_search_mail(message):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     target_email = message.text.strip()
-    
     results = list(db.collection('inventory').where('email', '==', target_email).stream())
     if results:
         m = results[0]
         d = m.to_dict()
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🗑 Delete Mail", callback_data=f"delmail_{m.id}"))
-        bot.send_message(message.chat.id, f"✅ **Mail Found!**\n📧 Email: `{d['email']}`\n📌 Category: {d['category']}\n🟢 Status: {d['status']}", parse_mode='Markdown', reply_markup=markup)
+        bot.send_message(message.chat.id, f"✅ **Mail Found!**\n📧 Email: `{d['email']}`\n📌 Category: {d['category']}\n🟢 Status: {d['status']}", parse_mode='Markdown', reply_markup=admin_menu())
+        bot.send_message(message.chat.id, "অ্যাকশন:", reply_markup=markup)
     else:
         bot.send_message(message.chat.id, "❌ এই মেইলটি স্টকে পাওয়া যায়নি।", reply_markup=admin_menu())
 
@@ -329,9 +320,9 @@ def admin_settings(message):
 def payment_setup(call):
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("Bkash Setup", callback_data="set_bkash"),
-        InlineKeyboardButton("Nagad Setup", callback_data="set_nagad"),
-        InlineKeyboardButton("Binance Setup", callback_data="set_binance")
+        InlineKeyboardButton("Bkash", callback_data="set_bkash"),
+        InlineKeyboardButton("Nagad", callback_data="set_nagad"),
+        InlineKeyboardButton("Binance", callback_data="set_binance")
     )
     settings = db.collection('settings').document('payment_methods').get().to_dict()
     text = f"⚙️ **Payment Gateways**\n━━━━━━━━━━━━\n🟣 bKash: `{settings.get('bkash')}`\n🟠 Nagad: `{settings.get('nagad')}`\n🟡 Binance: `{settings.get('binance')}`"
@@ -340,11 +331,11 @@ def payment_setup(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
 def update_payment_method(call):
     method = call.data.split('_')[1]
-    msg = bot.send_message(call.message.chat.id, f"নতুন {method.capitalize()} নম্বর/ID দিন:", reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, f"নতুন {method.capitalize()} নম্বর/ID দিন:", reply_markup=back_markup())
     bot.register_next_step_handler(msg, save_payment_method, method)
 
 def save_payment_method(message, method):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     db.collection('settings').document('payment_methods').update({method: message.text.strip()})
     bot.send_message(message.chat.id, f"✅ {method.capitalize()} আপডেট করা হয়েছে!", reply_markup=admin_menu())
 
@@ -358,11 +349,11 @@ def price_setup_categories(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("setprice_"))
 def ask_price(call):
     category = call.data.split('_')[1]
-    msg = bot.send_message(call.message.chat.id, f"**{category}** এর জন্য নতুন প্রাইস এবং ভ্যালিডিটি দিন।\nফরম্যাট: `Price|Validity`\n(যেমন: `6|6-10 Hours`)", parse_mode='Markdown', reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, f"**{category}** এর জন্য নতুন প্রাইস এবং ভ্যালিডিটি দিন।\nফরম্যাট: `Price|Validity`\n(যেমন: `6|6-10 Hours`)", parse_mode='Markdown', reply_markup=back_markup())
     bot.register_next_step_handler(msg, save_price_validity, category)
 
 def save_price_validity(message, category):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     try:
         price, validity = message.text.split('|')
         db.collection('settings').document('prices').update({
@@ -381,11 +372,11 @@ def admin_dashboard(message):
 
 @bot.message_handler(func=lambda message: message.text == "📢 Send Notice" and message.chat.id == ADMIN_ID)
 def send_notice_start(message):
-    msg = bot.send_message(message.chat.id, "সব ইউজারের কাছে যে নোটিশ পাঠাতে চান, তা লিখে পাঠান:", reply_markup=cancel_markup())
+    msg = bot.send_message(message.chat.id, "সব ইউজারের কাছে যে নোটিশ পাঠাতে চান, তা লিখে পাঠান:", reply_markup=back_markup())
     bot.register_next_step_handler(msg, broadcast_notice)
 
 def broadcast_notice(message):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     notice_text = f"📢 **Admin Notice:**\n\n{message.text}"
     try:
         users = db.collection('users').stream()
@@ -428,7 +419,7 @@ def show_user_list(call):
     if start > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"userpage_{page-1}"))
     if end < total_users: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"userpage_{page+1}"))
     if nav: markup.add(*nav)
-    markup.add(InlineKeyboardButton("📄 Export to TXT File", callback_data="export_users"))
+    markup.add(InlineKeyboardButton("📄 Export to TXT", callback_data="export_users"))
     
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
 
@@ -446,11 +437,11 @@ def export_users_txt(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "search_user")
 def ask_user_search(call):
-    msg = bot.send_message(call.message.chat.id, "🔎 User ID লিখে পাঠান:", reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, "🔎 User ID লিখে পাঠান:", reply_markup=back_markup())
     bot.register_next_step_handler(msg, search_user_details)
 
 def search_user_details(message):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     target_id = message.text.strip()
     user_ref = db.collection('users').document(target_id).get()
     
@@ -458,7 +449,6 @@ def search_user_details(message):
         data = user_ref.to_dict()
         status_icon = "✅ Active" if data.get('status') != 'banned' else "🚫 Banned"
         text = f"👤 **User Details**\n━━━━━━━━━━━━\n🆔 ID: `{target_id}`\n👤 Name: {data.get('name', 'User')}\n💰 Balance: {data.get('balance', 0)} ৳\n📌 Status: {status_icon}\n"
-            
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("✏️ Edit Balance", callback_data=f"editbal_{target_id}"),
@@ -479,11 +469,11 @@ def toggle_ban(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("editbal_"))
 def ask_new_balance(call):
     target_id = call.data.split('_')[1]
-    msg = bot.send_message(call.message.chat.id, f"`{target_id}` এর জন্য নতুন ব্যালেন্স অ্যামাউন্ট লিখুন:", parse_mode='Markdown', reply_markup=cancel_markup())
+    msg = bot.send_message(call.message.chat.id, f"`{target_id}` এর জন্য নতুন ব্যালেন্স অ্যামাউন্ট লিখুন:", parse_mode='Markdown', reply_markup=back_markup())
     bot.register_next_step_handler(msg, save_new_balance, target_id)
 
 def save_new_balance(message, target_id):
-    if message.text == "❌ Cancel": return cancel_action(message)
+    if message.text == "🔙 Back": return go_back(message)
     try:
         new_bal = int(message.text)
         db.collection('users').document(target_id).update({'balance': new_bal})
@@ -563,6 +553,95 @@ def balance_menu(message):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("➕ Add Fund", callback_data="add_fund_start"))
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+
+# ===================== ইউজার: ADD FUND & PAYMENT =====================
+@bot.callback_query_handler(func=lambda call: call.data == "add_fund_start")
+def ask_fund_amount(call):
+    msg = bot.send_message(call.message.chat.id, "আপনি কত টাকা অ্যাড করতে চান? (যেমন: 100)", reply_markup=back_markup())
+    bot.register_next_step_handler(msg, ask_payment_gateway)
+
+def ask_payment_gateway(message):
+    if message.text == "🔙 Back": return go_back(message)
+    try:
+        amount = int(message.text)
+        user_states[message.chat.id] = {'amount': amount}
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("🟣 bKash", callback_data="pay_bkash"),
+            InlineKeyboardButton("🟠 Nagad", callback_data="pay_nagad"),
+            InlineKeyboardButton("🟡 Binance", callback_data="pay_binance")
+        )
+        bot.send_message(message.chat.id, f"আপনি {amount} ৳ অ্যাড করতে চাচ্ছেন।\nদয়া করে পেমেন্ট মেথড সিলেক্ট করুন:", reply_markup=markup)
+        bot.send_message(message.chat.id, "অন্যথায় ফিরে যেতে 'Back' এ ক্লিক করুন।", reply_markup=back_markup())
+    except:
+        bot.send_message(message.chat.id, "❌ সঠিক টাকার পরিমাণ দিন।", reply_markup=user_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_"))
+def show_payment_details(call):
+    method = call.data.split('_')[1]
+    amount = user_states.get(call.message.chat.id, {}).get('amount', 0)
+    
+    settings = db.collection('settings').document('payment_methods').get().to_dict()
+    account_info = settings.get(method, "Not Setup Yet")
+    
+    user_states[call.message.chat.id]['method'] = method
+    
+    text = f"💳 **Payment details for {method.capitalize()}**\n━━━━━━━━━━━━━━\nপরিমাণ: {amount} ৳\nনম্বর/ID: `{account_info}` (কপি করতে ট্যাপ করুন)\n\nটাকা পাঠানোর পর আপনার Transaction ID বা Payment Number নিচে লিখে দিন:"
+    msg = bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=back_markup())
+    bot.register_next_step_handler(msg, process_trx_id)
+
+def process_trx_id(message):
+    if message.text == "🔙 Back": return go_back(message)
+        
+    user_id = message.chat.id
+    trx_id = message.text.strip()
+    data = user_states.get(user_id, {})
+    
+    if not data: return bot.send_message(user_id, "সেশন এক্সপায়ার হয়েছে। আবার চেষ্টা করুন।", reply_markup=user_menu())
+    
+    request_id = f"req_{int(time.time())}"
+    db.collection('payment_requests').document(request_id).set({
+        'user_id': user_id, 'amount': data['amount'], 'method': data['method'], 'trx_id': trx_id, 'status': 'pending'
+    })
+    
+    admin_text = f"🔔 **New Deposit Request**\n━━━━━━━━━━━━━━\n👤 User ID: `{user_id}`\n💰 Amount: {data['amount']} ৳\n🏦 Method: {data['method'].capitalize()}\n🏷 TrxID/Info: `{trx_id}`"
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}"),
+        InlineKeyboardButton("❌ Decline", callback_data=f"decline_{request_id}")
+    )
+    bot.send_message(ADMIN_ID, admin_text, parse_mode='Markdown', reply_markup=markup)
+    
+    bot.send_message(user_id, "✅ আপনার পেমেন্ট রিকোয়েস্ট অ্যাডমিনের কাছে পাঠানো হয়েছে। অ্যাপ্রুভ হওয়া পর্যন্ত অপেক্ষা করুন।", reply_markup=user_menu())
+    user_states.pop(user_id, None)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("approve_") or call.data.startswith("decline_"))
+def handle_payment_request(call):
+    action, req_id = call.data.split('_', 1)
+    req_doc = db.collection('payment_requests').document(req_id)
+    req_data = req_doc.get().to_dict()
+    
+    if req_data['status'] != 'pending':
+        return bot.answer_callback_query(call.id, "এই রিকোয়েস্টটি আগেই প্রসেস করা হয়েছে।")
+    
+    user_id = req_data['user_id']
+    amount = req_data['amount']
+    
+    if action == "approve":
+        user_ref = db.collection('users').document(str(user_id))
+        cur_bal = user_ref.get().to_dict().get('balance', 0)
+        user_ref.update({'balance': cur_bal + amount})
+        req_doc.update({'status': 'approved'})
+        
+        bot.edit_message_text(f"✅ Approved: {amount} ৳ added to `{user_id}`", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown')
+        try: bot.send_message(user_id, f"🎉 **Payment Approved!**\nআপনার অ্যাকাউন্টে {amount} ৳ অ্যাড হয়েছে।")
+        except: pass
+    else:
+        req_doc.update({'status': 'declined'})
+        bot.edit_message_text(f"❌ Declined Request of `{user_id}`", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown')
+        try: bot.send_message(user_id, f"❌ **Payment Declined!**\nআপনার {amount} ৳ এর পেমেন্ট রিকোয়েস্টটি বাতিল করা হয়েছে।")
+        except: pass
 
 # ===================== ইউজার: BUY MAIL MENU =====================
 @bot.message_handler(func=lambda message: message.text == "🛒 Buy Mail")
@@ -646,9 +725,9 @@ def return_user_mail(call):
     else:
         bot.answer_callback_query(call.id, "মেইলটি পাওয়া যায়নি।", show_alert=True)
 
-# ===================== ইনবক্স চেকিং (Spam + 20 Mins Filter + Animation) =====================
+# ===================== ইনবক্স চেকিং (Smart Search + OTP Extract) =====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("chk_"))
-def check_forwarded_inbox(call):
+def check_smart_inbox(call):
     sale_id = call.data.split('_')[1]
     sale_doc = db.collection('active_sales').document(sale_id).get()
     if not sale_doc.exists: return bot.answer_callback_query(call.id, "তথ্য পাওয়া যায়নি।")
@@ -663,8 +742,8 @@ def check_forwarded_inbox(call):
     
     msg = bot.send_message(call.message.chat.id, "⏳ সার্ভারের সাথে কানেক্ট করা হচ্ছে...")
     
-    # সুন্দর অ্যানিমেশন
-    anim_steps = ["🔍 ইনবক্স রিফ্রেশ করা হচ্ছে...", "📂 স্প্যাম বক্স চেক করা হচ্ছে...", "🚀 মেসেজ ফিল্টার করা হচ্ছে..."]
+    # সুন্দর ক্লিন অ্যানিমেশন (No mention of Spam/Forwarding)
+    anim_steps = ["📡 সার্ভারের সাথে কানেক্ট করা হচ্ছে...", "🔎 নতুন মেসেজ খোঁজা হচ্ছে...", "📥 ইনবক্স সিঙ্ক করা হচ্ছে..."]
     for step in anim_steps:
         bot.edit_message_text(step, chat_id=call.message.chat.id, message_id=msg.message_id)
         time.sleep(1.2)
@@ -680,27 +759,31 @@ def check_forwarded_inbox(call):
         for folder in folders_to_check:
             try:
                 mail.select(folder)
-                # শুধু এই ইউজারকে পাঠানো মেইল খুঁজবে
-                search_query = f'(TO "{target_email}")'
-                status, search_data = mail.search(None, search_query)
-                ids = search_data[0].split()
                 
-                # শেষের ৫টি মেসেজ ফিল্টার করবে 20 mins এর জন্য
-                for num in reversed(ids[-5:]):
+                # Fetching the latest 15 emails to search manually (Bypasses IMAP Search bugs for forwarded headers)
+                status, search_data = mail.search(None, 'ALL')
+                ids = search_data[0].split()
+                recent_ids = ids[-15:] 
+                
+                for num in reversed(recent_ids):
                     typ, m_data = mail.fetch(num, '(RFC822)')
-                    msg_obj = email.message_from_bytes(m_data[0][1])
+                    raw_email = m_data[0][1].decode(errors='ignore')
                     
-                    date_str = msg_obj.get('Date')
-                    if date_str:
-                        msg_date = parsedate_to_datetime(date_str)
-                        now_utc = datetime.now(timezone.utc)
-                        diff_seconds = (now_utc - msg_date).total_seconds()
+                    # Checking if the target email is mentioned anywhere in the email data
+                    if target_email.lower() in raw_email.lower():
+                        msg_obj = email.message_from_bytes(m_data[0][1])
+                        date_str = msg_obj.get('Date')
                         
-                        # যদি মেসেজটি গত ২০ মিনিটের মধ্যে এসে থাকে
-                        if diff_seconds <= 1200:
-                            if not best_time or msg_date > best_time:
-                                best_time = msg_date
-                                best_msg = msg_obj
+                        if date_str:
+                            msg_date = parsedate_to_datetime(date_str)
+                            now_utc = datetime.now(timezone.utc)
+                            diff_seconds = (now_utc - msg_date).total_seconds()
+                            
+                            # Valid only if received within last 20 mins
+                            if diff_seconds <= 1200:
+                                if not best_time or msg_date > best_time:
+                                    best_time = msg_date
+                                    best_msg = msg_obj
             except:
                 continue
                 
@@ -746,6 +829,6 @@ def check_forwarded_inbox(call):
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    time.sleep(10)
-    print("Bot is Running Smoothly...")
+    time.sleep(5)
+    print("Bot is Running Smoothly with Smart Search...")
     bot.infinity_polling()
