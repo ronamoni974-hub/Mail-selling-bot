@@ -92,7 +92,7 @@ threading.Thread(target=auto_inventory_manager, daemon=True).start()
 # ================= সার্ভার =================
 @app.route('/')
 def home():
-    return "Waleya OTP Verification Bot is Running!"
+    return "Waleya OTP Premium Bot is Running!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -102,7 +102,7 @@ def run_server():
 def user_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton("🛒 Purchase Mail"), KeyboardButton("📧 My Codes"),
+        KeyboardButton("🛒 Purchase Mail"), KeyboardButton("📧 My Gmail"),
         KeyboardButton("💳 Balance & Stock"), KeyboardButton("👤 My Profile"),
         KeyboardButton("ℹ️ Support")
     )
@@ -146,7 +146,7 @@ def welcome(message):
     if user_id == ADMIN_ID:
         bot.send_message(user_id, f"স্বাগতম অ্যাডমিন {name}!", reply_markup=admin_menu())
     else:
-        bot.send_message(user_id, f"স্বাগতম {name}! OTP Verification সিস্টেমে আপনাকে স্বাগতম।", reply_markup=user_menu())
+        bot.send_message(user_id, f"স্বাগতম {name}! প্রিমিয়াম OTP Verification সিস্টেমে আপনাকে স্বাগতম।", reply_markup=user_menu())
 
 @bot.message_handler(func=lambda message: message.text == "❌ Cancel Action")
 def cancel_action(message):
@@ -211,7 +211,6 @@ def process_purchase(call):
     if bal < price:
         return bot.send_message(user_id, f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। দাম {price} ৳।")
         
-    # ফ্রেশ মেইল খোঁজা এবং ৫ দিনের কুলডাউন চেক করা
     fresh_mails = db.collection('inventory').where('category', '==', 'Gmail').where('status', '==', 'fresh').stream()
     selected_mail_doc = None
     selected_data = None
@@ -222,7 +221,7 @@ def process_purchase(call):
         cooldowns = data.get('cooldowns', {})
         last_used = cooldowns.get(service, 0)
         
-        # যদি ৫ দিন (৪৩২০০০ সেকেন্ড) পার হয়ে যায়, তবেই ওই সার্ভিসের জন্য মেইলটি দেওয়া হবে
+        # যদি ৫ দিন (৪৩২০০০ সেকেন্ড) পার হয়ে যায়
         if now - last_used > 432000:
             selected_mail_doc = m
             selected_data = data
@@ -239,38 +238,69 @@ def process_purchase(call):
         })
         
         text = f"""
-✅ **Number / Mail Assigned Successfully!**
+✅ **Mail Assigned Successfully!**
 ━━━━━━━━━━━━━━━━━━━━
 📌 **Service:** {service}
 📧 **Email:** `{selected_data['email']}`
 
-_• If you need codes, click 'Refresh Code' below ⬇️_
+_• Go to 'My Gmail' menu to get your OTP codes ⬇️_
         """
         bot.edit_message_text(text, chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown')
     else:
         bot.send_message(user_id, f"❌ এই মুহূর্তে **{service}** এর জন্য কোনো ফ্রেশ মেইল স্টকে নেই। একটু পর চেষ্টা করুন।")
 
-# ===================== ইউজার: MY CODES & RETURN =====================
-@bot.message_handler(func=lambda message: message.text == "📧 My Codes")
-def my_mails(message):
+# ===================== ইউজার: MY GMAIL LIST =====================
+@bot.message_handler(func=lambda message: message.text == "📧 My Gmail")
+def my_gmail_list(message):
     user_id = message.chat.id
     if is_banned(user_id): return
     try:
         active_sales = db.collection('active_sales').where('user_id', '==', user_id).stream()
+        markup = InlineKeyboardMarkup(row_width=1)
         found = False
+        now = time.time()
+        
         for sale in active_sales:
             found = True
             data = sale.to_dict()
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton("🔄 Refresh Code", callback_data=f"inbox_{sale.id}"),
-                InlineKeyboardButton("🗑 Delete & Return", callback_data=f"retmail_{sale.id}")
-            )
-            bot.send_message(user_id, f"📌 **Service:** {data.get('service', 'Other')}\n📧 **Email:** `{data['email']}`", reply_markup=markup, parse_mode='Markdown')
-        if not found: bot.send_message(user_id, "আপনার কোনো সক্রিয় মেইল নেই।")
+            elapsed = now - data.get('buy_timestamp', 0)
+            remaining = int(21600 - elapsed) # ৬ ঘণ্টার কাউন্টডাউন
+            
+            if remaining > 0:
+                h, r = divmod(remaining, 3600)
+                m, s = divmod(r, 60)
+                time_str = f"{h:02d}:{m:02d}:{s:02d}"
+                btn_text = f"📌 {data.get('service', 'Mail')} | ⏳ {time_str}"
+                markup.add(InlineKeyboardButton(btn_text, callback_data=f"mailopt_{sale.id}"))
+                
+        if not found:
+            bot.send_message(user_id, "আপনার কোনো সক্রিয় জিমেইল নেই।")
+        else:
+            bot.send_message(user_id, "📂 **আপনার কেনা জিমেইল তালিকা:**\n_বিস্তারিত দেখতে এবং OTP পেতে নিচের লিস্ট থেকে মেইলে ক্লিক করুন:_", reply_markup=markup, parse_mode='Markdown')
     except Exception as e:
         print(e)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mailopt_"))
+def mail_options_menu(call):
+    bot.answer_callback_query(call.id)
+    sale_id = call.data.split('_')[1]
+    user_id = call.message.chat.id
+    
+    sale_doc = db.collection('active_sales').document(sale_id).get()
+    if not sale_doc.exists:
+        return bot.edit_message_text("❌ এই মেইলটির মেয়াদ শেষ বা এটি আর নেই।", chat_id=user_id, message_id=call.message.message_id)
+        
+    data = sale_doc.to_dict()
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📩 Check Inbox", callback_data=f"inbox_{sale_id}"),
+        InlineKeyboardButton("🗑 Delete & Return", callback_data=f"retmail_{sale_id}")
+    )
+    
+    text = f"⚙️ **Gmail Management**\n━━━━━━━━━━━━━━━━━━━━\n📌 **Service:** {data.get('service', 'Other')}\n📧 **Email:** `{data['email']}`\n\n_OTP দেখতে Check Inbox এ ক্লিক করুন।_"
+    bot.edit_message_text(text, chat_id=user_id, message_id=call.message.message_id, reply_markup=markup, parse_mode='Markdown')
+
+# ===================== ইউজার: DELETE & RETURN =====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("retmail_"))
 def return_user_mail(call):
     bot.answer_callback_query(call.id)
@@ -288,7 +318,7 @@ def return_user_mail(call):
         cooldowns = data.get('cooldowns', {})
         
         if msg_received:
-            cooldowns[service] = time.time() # ৫ দিনের জন্য ব্লক করা হলো
+            cooldowns[service] = time.time() # ৫ দিনের কুলডাউন
             
         db.collection('inventory').add({
             'email': data['email'], 'password': data['password'], 
@@ -310,17 +340,13 @@ def return_user_mail(call):
 
 # ===================== ইনবক্স চেকিং ও OTP এক্সট্রাক্টর (Smart Parse) =====================
 def extract_otp(text):
-    # HTML ট্যাগ রিমুভ করা
     clean_text = re.sub(r'<[^>]+>', ' ', text)
-    
     # 6-8 ডিজিটের কোড (মাঝে স্পেস থাকলেও ধরবে, যেমন: 123 456)
     match = re.search(r'\b\d{3}\s?\d{3,5}\b', clean_text)
     if match: return match.group(0).strip()
-    
     # আলফানিউমেরিক কোড (যেমন: HasjYsb) 
     match = re.search(r'(?i)(?:code|otp|password|pin).*?\b([A-Za-z0-9]{6,8})\b', clean_text.replace(" ", ""))
     if match: return match.group(1).strip()
-    
     return None
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("inbox_"))
@@ -340,7 +366,7 @@ def check_inbox(call):
     password = data['password']
     service_keyword = data.get('service', 'Other').lower()
     
-    bot.edit_message_text("🔍 Searching for email, please wait...", chat_id=user_id, message_id=call.message.message_id)
+    bot.edit_message_text("🔍 Searching for OTP, please wait...", chat_id=user_id, message_id=call.message.message_id)
     
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
@@ -349,11 +375,16 @@ def check_inbox(call):
         status, search_data = mail.search(None, 'ALL')
         mail_ids = search_data[0].split()
 
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 Refresh Code", callback_data=f"inbox_{sale_id}"),
+            InlineKeyboardButton("🔙 Back to Options", callback_data=f"mailopt_{sale_id}")
+        )
+
         if not mail_ids:
-            bot.edit_message_text(f"❌ `{email_addr}`\nইনবক্সে এখনো কোনো মেসেজ আসেনি।", chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown')
+            bot.edit_message_text(f"❌ `{email_addr}`\nইনবক্সে এখনো কোনো মেসেজ আসেনি।\n\n_Refresh Code এ ক্লিক করে আবার চেক করুন।_", chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
             return
 
-        # শুধুমাত্র কাঙ্ক্ষিত সার্ভিসের মেইল খোঁজা (সর্বশেষ ১০টি মেইল চেক করবে)
         found_msg = None
         for m_id in reversed(mail_ids[-10:]):
             status, msg_data = mail.fetch(m_id, '(RFC822)')
@@ -375,32 +406,32 @@ def check_inbox(call):
                     else:
                         body = msg_obj.get_payload(decode=True).decode(errors='ignore')
                     
-                    # যদি সার্ভিস 'Other' হয় অথবা সেন্ডার/সাবজেক্টে সার্ভিসের নাম থাকে
                     if service_keyword == 'other' or service_keyword in sender.lower() or service_keyword in subject.lower():
                         found_msg = (sender, subject, body)
                         break
             if found_msg: break
 
         if not found_msg:
-            bot.edit_message_text(f"❌ **{data.get('service')}** থেকে এখনো কোনো নতুন কোড আসেনি। একটু পর আবার রিফ্রেশ করুন।", chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown')
+            bot.edit_message_text(f"❌ **{data.get('service')}** থেকে এখনো কোনো নতুন কোড আসেনি।\n\n_Refresh Code এ ক্লিক করে আবার চেক করুন।_", chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
         else:
             sender, subject, body = found_msg
             sale_ref.update({'msg_received': True})
             
-            # স্মার্ট কোড এক্সট্রাকশন
             otp_code = extract_otp(subject + " " + body)
             
-            text = f"**SUPPORT WALEYA OTP**\nEmail: `{email_addr}`\n\n"
+            text = f"**SUPPORT WALEYA OTP**\n📧 Email: `{email_addr}`\n\n"
             if otp_code:
-                text += f"🔑 **Latest Code:** `{otp_code}`\n\n"
+                # ডাবল লাইনের বক্স এবং টাচ টু কপি
+                text += f"╔════════════════════╗\n   🔑 Code: `{otp_code}`   \n╚════════════════════╝\n\n"
             
-            # মেসেজের স্নাইপেট
-            text += f"❝ {body[:120].strip()}... ❞"
+            text += f"❝ {body[:120].strip()}... ❞\n"
             
-            bot.edit_message_text(text, chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown')
+            bot.edit_message_text(text, chat_id=user_id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
             
     except Exception as e:
-        bot.edit_message_text(f"❌ **Login Failed!** App Password চেক করুন।", chat_id=user_id, message_id=call.message.message_id)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 Back to Options", callback_data=f"mailopt_{sale_id}"))
+        bot.edit_message_text(f"❌ **Login Failed!** App Password চেক করুন।", chat_id=user_id, message_id=call.message.message_id, reply_markup=markup)
 
 # ===================== ইউজার: ADD FUND & PAYMENT =====================
 @bot.callback_query_handler(func=lambda call: call.data == "add_fund_start")
