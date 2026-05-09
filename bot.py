@@ -61,7 +61,6 @@ def extract_otp(text):
 
 # ================= ব্যাকগ্রাউন্ড চেকার (Duplicate Fix) =================
 def return_to_inventory(email_addr, password, cooldowns):
-    # ডাবল হওয়া রোধ করতে আগের মেইল আপডেট করবে, না থাকলে নতুন বানাবে
     inv_docs = list(db.collection('inventory').where('email', '==', email_addr).stream())
     if inv_docs:
         inv_docs[0].reference.update({'status': 'fresh', 'cooldowns': cooldowns, 'password': password})
@@ -80,7 +79,7 @@ def auto_inventory_manager():
                 msg_received = data.get('msg_received', False)
                 elapsed = now - buy_time
                 service = data.get('service', 'Other')
-                cooldowns = data.get('cooldowns', {})
+                cooldowns = data.get('cooldowns') or {}
                 
                 # ২০ মিনিট ওভার এবং কোড আসেনি
                 if elapsed >= 1200 and not msg_received:
@@ -292,7 +291,7 @@ def return_user_mail(call):
         price = data.get('price', 0)
         msg_received = data.get('msg_received', False)
         service = data.get('service', 'Other')
-        cooldowns = data.get('cooldowns', {})
+        cooldowns = data.get('cooldowns') or {}
         
         if msg_received: cooldowns[service] = time.time()
         return_to_inventory(data['email'], data['password'], cooldowns)
@@ -392,6 +391,29 @@ def check_inbox(call):
         markup.add(InlineKeyboardButton("🔙 Back to Options", callback_data=f"mailopt_{sale_id}"))
         bot.edit_message_text(f"❌ **Login Failed!** App Password চেক করুন।", chat_id=user_id, message_id=msg.message_id, reply_markup=markup)
 
+# ===================== ব্যাক ন্যাভিগেশন সিস্টেম (BACK BUTTONS) =====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("back_"))
+def back_handler(call):
+    bot.answer_callback_query(call.id)
+    target = call.data.split('_')[1]
+    
+    if target == "inventory":
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("➕ Add Gmails", callback_data="add_mails"), InlineKeyboardButton("📋 Mail List", callback_data="view_mails"))
+        markup.add(InlineKeyboardButton("🔍 Search Mail", callback_data="search_mail_admin"))
+        bot.edit_message_text("মেইল ম্যানেজমেন্ট মেনু:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        
+    elif target == "users":
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("📋 User List", callback_data="userpage_0"), InlineKeyboardButton("🔍 Search User ID", callback_data="search_user"))
+        bot.edit_message_text("ইউজার ম্যানেজমেন্ট মেনু:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        
+    elif target == "settings":
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("💳 Payment Gateway Setup", callback_data="setup_payments"), InlineKeyboardButton("🏷 Service Price Setup", callback_data="setprice_Gmail"))
+        bot.edit_message_text("⚙️ **Bot Settings Menu**", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+
+
 # (Add fund, Profiles, Support blocks remain exactly the same as previously validated)
 @bot.callback_query_handler(func=lambda call: call.data == "add_fund_start")
 def ask_fund_amount(call):
@@ -485,25 +507,29 @@ def view_mails(call):
     bot.answer_callback_query(call.id)
     mails = list(db.collection('inventory').stream())
     
-    # ডাবল মেইল সিঙ্গেল করার লজিক
     unique_mails = {}
     for m in mails:
         d = m.to_dict()
-        email_addr = d['email']
-        if email_addr not in unique_mails: unique_mails[email_addr] = d
-        else: unique_mails[email_addr]['cooldowns'].update(d.get('cooldowns', {}))
+        email_addr = d.get('email')
+        if not email_addr: continue
+        c_downs = d.get('cooldowns') or {}
+        if email_addr not in unique_mails: 
+            unique_mails[email_addr] = {'cooldowns': c_downs}
+        else: 
+            unique_mails[email_addr]['cooldowns'].update(c_downs)
             
-    if not unique_mails: return bot.send_message(call.message.chat.id, "স্টকে কোনো মেইল নেই।")
+    if not unique_mails: return bot.edit_message_text("স্টকে কোনো মেইল নেই।", chat_id=call.message.chat.id, message_id=call.message.message_id)
     
     text = "📋 **সর্বশেষ মেইলের লিস্ট:**\n\n"
-    for email_addr, d in list(unique_mails.items())[:15]:
-        sold_count = len(d.get('cooldowns', {}))
+    for email_addr, info in list(unique_mails.items())[:15]:
+        sold_count = len(info['cooldowns'])
         tag = "🟢 Fresh" if sold_count == 0 else f"🔴 Sold: {sold_count} Times"
         text += f"📧 `{email_addr}` - {tag}\n"
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📄 Export All to TXT File", callback_data="export_all_mails"))
-    bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+    markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_inventory"))
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "search_mail_admin")
 def ask_mail_search(call):
@@ -519,26 +545,30 @@ def process_search_mail(message):
     if not docs: return bot.send_message(message.chat.id, "❌ এই মেইলটি স্টকে পাওয়া যায়নি।", reply_markup=admin_menu())
     
     all_cooldowns = {}
-    for d in docs: all_cooldowns.update(d.to_dict().get('cooldowns', {}))
+    for d in docs: all_cooldowns.update(d.to_dict().get('cooldowns') or {})
         
     sold_count = len(all_cooldowns)
     used_services = ", ".join(all_cooldowns.keys()) if sold_count > 0 else "None"
     
     text = f"🔎 **Mail Details**\n━━━━━━━━━━━━━━\n📧 **Email:** `{email_addr}`\n🛒 **Total Sold:** {sold_count} times\n📌 **Used Services:** {used_services}\n"
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton("🗑 Delete this Mail", callback_data=f"delmailall_{email_addr}"))
-    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+    markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_inventory"))
+    
+    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=admin_menu())
+    bot.send_message(message.chat.id, "অ্যাকশন সিলেক্ট করুন:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("delmailall_"))
 def delete_all_mail_instances(call):
     bot.answer_callback_query(call.id)
     email_addr = call.data.split('_')[1]
     docs = db.collection('inventory').where('email', '==', email_addr).stream()
-    count = 0
     for doc in docs:
         doc.reference.delete()
-        count += 1
-    bot.edit_message_text(f"✅ ডাটাবেস থেকে `{email_addr}` সম্পূর্ণ মুছে ফেলা হয়েছে!", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown')
+        
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 Back to Menu", callback_data="back_inventory"))
+    bot.edit_message_text(f"✅ ডাটাবেস থেকে `{email_addr}` সম্পূর্ণ মুছে ফেলা হয়েছে!", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "add_mails")
 def enter_mails_to_add(call):
@@ -561,10 +591,21 @@ def process_add_mails(message):
 def export_all_mails_txt(call):
     bot.answer_callback_query(call.id)
     mails = list(db.collection('inventory').stream())
-    text_data = "Email | Password | Category | Status\n" + "-"*50 + "\n"
+    
+    unique_mails = {}
     for m in mails:
         d = m.to_dict()
-        text_data += f"{d.get('email')} | {d.get('password')} | {d.get('category')} | {d.get('status')}\n"
+        email_addr = d.get('email')
+        if not email_addr: continue
+        if email_addr not in unique_mails: unique_mails[email_addr] = d
+        else: unique_mails[email_addr]['cooldowns'].update(d.get('cooldowns') or {})
+            
+    text_data = "Email | Password | Status | Sold Times\n" + "-"*60 + "\n"
+    for email_addr, info in unique_mails.items():
+        sold = len(info.get('cooldowns', {}))
+        status = "Fresh" if sold == 0 else "Sold"
+        text_data += f"{email_addr} | {info.get('password', 'Hidden')} | {status} | {sold}\n"
+        
     file_data = io.BytesIO(text_data.encode('utf-8'))
     file_data.name = "Mail_Inventory.txt"
     bot.send_document(call.message.chat.id, file_data, caption="📂 All Mails Exported")
@@ -602,6 +643,7 @@ def show_user_list(call):
     if start + 10 < total: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"userpage_{page+1}"))
     if nav: markup.add(*nav)
     markup.add(InlineKeyboardButton("📄 Export to TXT", callback_data="export_users"))
+    markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_users"))
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "export_users")
@@ -632,8 +674,11 @@ def search_user_details(message):
         bought_mails = list(db.collection('active_sales').where('user_id', '==', int(target_id)).stream())
         status_icon = "✅ Active" if data.get('status') != 'banned' else "🚫 Banned"
         text = f"👤 **User Details**\n━━━━━━━━━━━━\n🆔 ID: `{target_id}`\n👤 Name: {data.get('name') or 'User'}\n💰 Balance: {data.get('balance', 0)} ৳\n🛒 Total Bought: {len(bought_mails)}\n📌 Status: {status_icon}\n"
+        
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton("✏️ Edit Balance", callback_data=f"editbal_{target_id}"), InlineKeyboardButton("🚫 Ban", callback_data=f"ban_{target_id}") if data.get('status') != 'banned' else InlineKeyboardButton("✅ Unban", callback_data=f"unban_{target_id}"))
+        markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_users"))
+        
         bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=admin_menu())
         bot.send_message(message.chat.id, "অ্যাকশন সিলেক্ট করুন:", reply_markup=markup)
     else: bot.send_message(message.chat.id, "❌ এই ID ডাটাবেসে নেই।", reply_markup=admin_menu())
@@ -643,7 +688,10 @@ def toggle_ban(call):
     bot.answer_callback_query(call.id)
     action, target_id = call.data.split('_')
     db.collection('users').document(target_id).update({'status': 'banned' if action == 'ban' else 'active'})
-    bot.edit_message_text(f"✅ ইউজারকে {action} করা হয়েছে!", chat_id=call.message.chat.id, message_id=call.message.message_id)
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 Back to Users", callback_data="back_users"))
+    bot.edit_message_text(f"✅ ইউজারকে {action} করা হয়েছে!", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("editbal_"))
 def ask_new_balance(call):
@@ -672,6 +720,8 @@ def payment_setup(call):
     bot.answer_callback_query(call.id)
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("Bkash Setup", callback_data="set_bkash"), InlineKeyboardButton("Nagad Setup", callback_data="set_nagad"), InlineKeyboardButton("Binance Setup", callback_data="set_binance"))
+    markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_settings"))
+    
     settings = db.collection('settings').document('payment_methods').get().to_dict()
     text = f"⚙️ **Payment Gateways**\n━━━━━━━━━━━━\n🟣 bKash: `{settings.get('bkash')}`\n🟠 Nagad: `{settings.get('nagad')}`\n🟡 Binance: `{settings.get('binance')}`"
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
